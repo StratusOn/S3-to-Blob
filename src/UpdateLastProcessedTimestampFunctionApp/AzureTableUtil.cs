@@ -1,5 +1,7 @@
 ﻿using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Azure.KeyVault;
+using Microsoft.Azure.Services.AppAuthentication;
 using Microsoft.Azure.WebJobs.Host;
 using Microsoft.WindowsAzure.Storage;
 using Microsoft.WindowsAzure.Storage.Table;
@@ -10,13 +12,25 @@ using System.Threading.Tasks;
 
 public static class AzureTableUtil
 {
+    private static string tableConnectionString;
+
     public static async Task<IActionResult> UpdateLastProcessedTimestampInTable(HttpRequest req, TraceWriter log)
     {
-        string tableConnectionString = Environment.GetEnvironmentVariable("LastProcessedDateTimeTableConnectionString", EnvironmentVariableTarget.Process);
+        if (tableConnectionString == null)
+        {
+            log.Info($"Fetching LastProcessedDateTime table Connection String for the first time from KeyVault...");
+            var azureServiceTokenProvider = new AzureServiceTokenProvider();
+            var keyVaultClient = new KeyVaultClient(new KeyVaultClient.AuthenticationCallback(azureServiceTokenProvider.KeyVaultTokenCallback));
+            var secretName = Environment.GetEnvironmentVariable("AzureTableStorageLastProcessedConnectionStringSecretName", EnvironmentVariableTarget.Process);
+            var azureKeyVaultUrl = Environment.GetEnvironmentVariable("AzureKeyVaultUrl", EnvironmentVariableTarget.Process);
+            var secret = await keyVaultClient.GetSecretAsync($"{azureKeyVaultUrl}secrets/{secretName}").ConfigureAwait(false);
+            tableConnectionString = secret.Value;
+            log.Info("[Setting]: Successfully fetched Table Connection String from KeyVault.");
+        }
         string tableName = Environment.GetEnvironmentVariable("LastProcessedDateTimeTableName", EnvironmentVariableTarget.Process);
         string tablePropertyName = Environment.GetEnvironmentVariable("LastProcessedTablePropertyName", EnvironmentVariableTarget.Process);
 
-        log.Info($"[Setting]: Table Connection String: {tableConnectionString}");
+        //log.Info($"[Setting]: Table Connection String: {tableConnectionString}");
         log.Info($"[Setting]: Table Name: {tableName}");
         log.Info($"[Setting]: Table Property Name: {tablePropertyName}");
 

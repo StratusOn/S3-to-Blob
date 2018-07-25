@@ -1,8 +1,1135 @@
 {
-  "$schema": "https://schema.management.azure.com/schemas/2015-01-01/deploymentTemplate.json#",
+  "$schema": "http://schema.management.azure.com/schemas/2015-01-01/deploymentTemplate.json#",
   "contentVersion": "1.0.0.0",
-  "parameters": {},
-  "variables": {},
-  "resources": [],
-  "outputs": {}
+  "parameters": {
+    "location": {
+      "type": "string",
+      "metadata": {
+        "description": "Location where the Azure Data Factory is to be deployed. The allowed values are the locations where ADFv2 is available."
+      },
+      "allowedValues": [
+        "East US",
+        "East US 2",
+        "North Europe",
+        "Southeast Asia",
+        "West Central US",
+        "West Europe",
+        "West US",
+        "West US 2"
+      ]
+    },
+    "factoryName": {
+      "type": "string",
+      "metadata": {
+        "description": "Azure Data Factory (ADFv2) Name."
+      },
+      "defaultValue": "[concat('adfs3toazureblob', uniqueString(resourceGroup().id, deployment().name))]"
+    },
+    "sourceAmazonS3AccessKeyId": {
+      "type": "string",
+      "metadata": {
+        "description": "Access Key Id of the S3 bucket from which objects are to be copied into the target Azure Storage Account."
+      }
+    },
+    "sourceAmazonS3SecretAccessKey": {
+      "type": "securestring",
+      "metadata": {
+        "description": "Secret Access Key of the S3 bucket from which objects are to be copied into the target Azure Storage Account."
+      }
+    },
+    "s3BucketName": {
+      "type": "string",
+      "metadata": {
+        "description": "The name of the S3 bucket whose contents are to be copied."
+      }
+    },
+    "s3BucketRegion": {
+      "type": "object",
+      "metadata": {
+        "description": "The name of the S3 bucket region."
+      },
+      "allowedValues": [
+        {
+          "regionName": "US East (N. Virginia)",
+          "region": "us-east-1"
+        },
+        {
+          "regionName": "US East (Ohio)",
+          "region": "us-east-2"
+        },
+        {
+          "regionName": "US West (N. California)",
+          "region": "us-west-1"
+        },
+        {
+          "regionName": "US West (Oregon)",
+          "region": "us-west-2"
+        },
+        {
+          "regionName": "Canada (Central)",
+          "region": "ca-central-1"
+        },
+        {
+          "regionName": "Asia Pacific (Mumbai)",
+          "region": "ap-south-1"
+        },
+        {
+          "regionName": "Asia Pacific (Seoul)",
+          "region": "ap-northeast-2"
+        },
+        {
+          "regionName": "Asia Pacific (Osaka-Local)",
+          "region": "ap-northeast-3"
+        },
+        {
+          "regionName": "Asia Pacific (Singapore)",
+          "region": "ap-southeast-1"
+        },
+        {
+          "regionName": "Asia Pacific (Sydney)",
+          "region": "ap-southeast-2"
+        },
+        {
+          "regionName": "Asia Pacific (Tokyo)",
+          "region": "ap-northeast-1"
+        },
+        {
+          "regionName": "China (Beijing)",
+          "region": "cn-north-1"
+        },
+        {
+          "regionName": "China (Ningxia)",
+          "region": "cn-northwest-1"
+        },
+        {
+          "regionName": "EU (Frankfurt)",
+          "region": "eu-central-1"
+        },
+        {
+          "regionName": "EU (Ireland)",
+          "region": "eu-west-1"
+        },
+        {
+          "regionName": "EU (London)",
+          "region": "eu-west-2"
+        },
+        {
+          "regionName": "EU (Paris)",
+          "region": "eu-west-3"
+        },
+        {
+          "regionName": "South America (São Paulo)",
+          "region": "sa-east-1"
+        }
+      ]
+    },
+    "targetBlobStorageAccountNameOrConnectionString": {
+      "type": "securestring",
+      "metadata": {
+        "description": "Target Azure Storage Account name (if in the current resource group in which the template will be deployed) or the connection string of the Storage Account."
+      }
+    },
+    "targetBlobStorageContainer": {
+      "type": "string",
+      "metadata": {
+        "description": "Container name in the target Azure Storage Account where S3 objects are to be copied."
+      }
+    }
+  },
+  "variables": {
+    "uniqueSuffix": "[uniqueString(resourceGroup().id, deployment().name)]",
+    "factoryId": "[concat('Microsoft.DataFactory/factories/', parameters('factoryName'))]",
+    "targetBlobStorageContainerExpression": "@dataset().keyName",
+    "triggerScheduleFrequency": "Hour",
+    "triggerScheduleInterval": 1,
+    "triggerScheduleStartTime": "2018-07-15T00:00:00.000Z",
+    "triggerScheduleTimeZone": "UTC",
+    "dataFactoryApiVersion": "2018-06-01",
+    "keyVaultApiVersion": "2016-10-01",
+    "appInsightsApiVersion": "2014-08-01",
+    "storageApiVersion": "2016-12-01",
+    "appServiceApiVersion": "2016-08-01",
+    "hostingPlanApiVersion": "2016-09-01",
+    "roleAssignmentsApiVersion": "2016-07-01",
+    "msiApiVersion": "2015-08-31-PREVIEW",
+    "functionAppName": "[concat('adffunc', variables('uniqueSuffix'))]",
+    "appInsightsName": "[variables('functionAppName')]",
+    "listS3ObjectsFunction": {
+      "functionName": "ListS3Objects",
+      "functionFiles": {
+        "run.csx": "#r \"Newtonsoft.Json\"\r\n#load \"S3Util.cs\"\r\n\r\nusing Microsoft.AspNetCore.Mvc;\r\nusing Microsoft.Azure.WebJobs;\r\nusing Microsoft.Azure.WebJobs.Extensions.Http;\r\nusing Microsoft.AspNetCore.Http;\r\nusing Microsoft.Azure.WebJobs.Host;\r\nusing System.Threading.Tasks;\r\n\r\npublic static async Task<IActionResult> Run(HttpRequest req, TraceWriter log)\r\n{\r\n    log.Info(\"ListS3Objects function processed a request.\");\r\n    IActionResult response = await S3Util.ListingObjectsAsync(req, log);\r\n    return response;\r\n}",
+        "function.json": "{\r\n  \"bindings\": [\r\n    {\r\n      \"authLevel\": \"function\",\r\n      \"name\": \"req\",\r\n      \"type\": \"httpTrigger\",\r\n      \"direction\": \"in\",\r\n      \"methods\": [\r\n        \"get\",\r\n        \"post\"\r\n      ]\r\n    },\r\n    {\r\n      \"name\": \"$return\",\r\n      \"type\": \"http\",\r\n      \"direction\": \"out\"\r\n    }\r\n  ]\r\n}",
+        "function.proj": "<Project Sdk=\"Microsoft.NET.Sdk\">\r\n  <PropertyGroup>\r\n    <TargetFramework>netstandard2.0</TargetFramework>\r\n  </PropertyGroup>\r\n  <ItemGroup>\r\n    <PackageReference Include=\"AWSSDK.S3\" Version=\"3.3.19\" />\r\n    <PackageReference Include=\"Microsoft.NET.Sdk.Functions\" Version=\"1.0.14\" />\r\n    <PackageReference Include=\"Microsoft.Azure.KeyVault\" Version=\"3.0.0\" />\r\n    <PackageReference Include=\"Microsoft.Azure.Services.AppAuthentication\" Version=\"1.1.0-preview\" />\r\n    <PackageReference Include=\"Newtonsoft.Json\" Version=\"11.0.2\" />\r\n  </ItemGroup>\r\n</Project>",
+        "S3Util.cs": "using Amazon;\r\nusing Amazon.S3;\r\nusing Amazon.S3.Model;\r\nusing Microsoft.AspNetCore.Http;\r\nusing Microsoft.AspNetCore.Mvc;\r\nusing Microsoft.Azure.KeyVault;\r\nusing Microsoft.Azure.Services.AppAuthentication;\r\nusing Microsoft.Azure.WebJobs.Host;\r\nusing Newtonsoft.Json;\r\nusing System;\r\nusing System.Collections.Generic;\r\nusing System.IO;\r\nusing System.Threading.Tasks;\r\n\r\npublic static class S3Util\r\n{\r\n    private static string awsSecretKey;\r\n\r\n    public static async Task<IActionResult> ListingObjectsAsync(HttpRequest req, TraceWriter log)\r\n    {\r\n        // Reference: https://docs.aws.amazon.com/AmazonS3/latest/dev/ListingObjectKeysUsingNetSDK.html\r\n        var bucketName = Environment.GetEnvironmentVariable(\"S3BucketName\", EnvironmentVariableTarget.Process);\r\n        var bucketRegion = RegionEndpoint.GetBySystemName(Environment.GetEnvironmentVariable(\"S3BucketRegion\", EnvironmentVariableTarget.Process));\r\n\r\n        if (awsSecretKey == null)\r\n        {\r\n            log.Info($\"Fetching AWS secret key for the first time from KeyVault...\");\r\n            var azureServiceTokenProvider = new AzureServiceTokenProvider();\r\n            var keyVaultClient = new KeyVaultClient(new KeyVaultClient.AuthenticationCallback(azureServiceTokenProvider.KeyVaultTokenCallback));\r\n            var secretName = Environment.GetEnvironmentVariable(\"AmazonS3SecretAccessKeySecretName\", EnvironmentVariableTarget.Process);\r\n            var azureKeyVaultUrl = Environment.GetEnvironmentVariable(\"AzureKeyVaultUrl\", EnvironmentVariableTarget.Process);\r\n            var secret = await keyVaultClient.GetSecretAsync($\"{azureKeyVaultUrl}secrets/{secretName}\").ConfigureAwait(false);\r\n            awsSecretKey = secret.Value;\r\n            log.Info(\"[Setting]: Successfully fetched AWS secret key from KeyVault.\");\r\n        }\r\n\r\n        var credentials = new Amazon.Runtime.BasicAWSCredentials(Environment.GetEnvironmentVariable(\"AwsAccessKey\", EnvironmentVariableTarget.Process), awsSecretKey);\r\n\r\n        string s3BucketLastProcessedDateTimeUtcAsString = req.Query[\"s3BucketLastProcessedDateTimeUtc\"]; // GET\r\n        string requestBody = new StreamReader(req.Body).ReadToEnd(); // POST\r\n        dynamic data = JsonConvert.DeserializeObject(requestBody);\r\n        s3BucketLastProcessedDateTimeUtcAsString = s3BucketLastProcessedDateTimeUtcAsString ?? data?.s3BucketLastProcessedDateTimeUtc;\r\n        if (string.IsNullOrWhiteSpace(s3BucketLastProcessedDateTimeUtcAsString))\r\n        {\r\n            string errorMessage = \"A 's3BucketLastProcessedDateTimeUtc' querystring parameter or a request body containing a JSON object with a 's3BucketLastProcessedDateTimeUtc' property was expected but not found.\";\r\n            log.Info(errorMessage);\r\n            return new BadRequestObjectResult(errorMessage);\r\n        }\r\n        var s3BucketLastProcessedDateTimeUtc = DateTime.Parse(s3BucketLastProcessedDateTimeUtcAsString);\r\n\r\n        log.Info($\"Bucket Name: {bucketName}.\");\r\n        log.Info($\"Bucket Region: {bucketRegion}.\");\r\n        log.Info($\"S3 Bucket Last Processed DateTimeUtc: {s3BucketLastProcessedDateTimeUtcAsString}.\");\r\n\r\n        List<S3Object> filteredObjects = new List<S3Object>();\r\n        int totalUnfilteredCount = 0;\r\n        int currentUnfilteredCount = 0;\r\n        DateTime newLastProcessedDateTimeUtc = DateTime.UtcNow;\r\n        IAmazonS3 client = new AmazonS3Client(credentials, bucketRegion);\r\n        try\r\n        {\r\n            ListObjectsV2Request request = new ListObjectsV2Request\r\n            {\r\n                BucketName = bucketName\r\n            };\r\n\r\n            ListObjectsV2Response response;\r\n            do\r\n            {\r\n                response = await client.ListObjectsV2Async(request);\r\n                currentUnfilteredCount = response.S3Objects.Count;\r\n                totalUnfilteredCount += currentUnfilteredCount;\r\n                log.Info($\"Results Count (pre-filtering): {currentUnfilteredCount}.\");\r\n                var currentFilteredObjects = response.S3Objects.FindAll((s3Object) =>\r\n                {\r\n                    // Return objects updated after the last process date and that are not folder records (end with _$folder$ and have 0 size).\r\n                    return DateTime.Compare(s3Object.LastModified.ToUniversalTime(), s3BucketLastProcessedDateTimeUtc) > 0\r\n                        & !(s3Object.Key.EndsWith(\"_$folder$\", StringComparison.InvariantCulture) && s3Object.Size == 0);\r\n                });\r\n                log.Info($\"Results Count (post-filtering): {currentFilteredObjects.Count}.\");\r\n                filteredObjects.AddRange(currentFilteredObjects);\r\n\r\n                log.Info($\"Next Continuation Token: {response.NextContinuationToken}.\");\r\n                request.ContinuationToken = response.NextContinuationToken;\r\n            } while (response.IsTruncated);\r\n\r\n            log.Info($\"Results Count (total-unfiltered): {totalUnfilteredCount}.\");\r\n            log.Info($\"Results Count (total-filtered): {filteredObjects.Count}.\");\r\n            dynamic payload = new System.Dynamic.ExpandoObject();\r\n            payload.s3Objects = filteredObjects;\r\n            payload.newLastProcessedDateTimeUtc = newLastProcessedDateTimeUtc.ToString();\r\n            return new OkObjectResult(JsonConvert.SerializeObject(payload, Formatting.Indented));\r\n        }\r\n        catch (AmazonS3Exception amazonS3Exception)\r\n        {\r\n            log.Info($\"AmazonS3Exception [ListingObjectsAsync]: {amazonS3Exception.ToString()}.\");\r\n            return new BadRequestObjectResult(\"Operation failed (AmazonS3Exception). Check function's log for details.\");\r\n        }\r\n        catch (Exception exception)\r\n        {\r\n            log.Info($\"Exception [ListingObjectsAsync]: {exception.ToString()}.\");\r\n            return new BadRequestObjectResult(\"Operation failed. Check function's log for details.\");\r\n        }\r\n    }\r\n}\r\n"
+      }
+    },
+    "updateLastProcessedFunction": {
+      "functionName": "UpdateLastProcessed",
+      "functionFiles": {
+        "run.csx": "#r \"Newtonsoft.Json\"\r\n#r \"Microsoft.WindowsAzure.Storage\"\r\n#load \"AzureTableUtil.cs\"\r\n\r\nusing Microsoft.AspNetCore.Mvc;\r\nusing Microsoft.Azure.WebJobs;\r\nusing Microsoft.Azure.WebJobs.Extensions.Http;\r\nusing Microsoft.AspNetCore.Http;\r\nusing Microsoft.Azure.WebJobs.Host;\r\nusing System.Threading.Tasks;\r\n\r\npublic static async Task<IActionResult> Run(HttpRequest req, TraceWriter log)\r\n{\r\n    log.Info(\"UpdateLastProcessed function processed a request.\");\r\n    IActionResult response = await AzureTableUtil.UpdateLastProcessedTimestampInTable(req, log);\r\n    return response;\r\n}\r\n",
+        "function.json": "{\r\n  \"bindings\": [\r\n    {\r\n      \"authLevel\": \"function\",\r\n      \"name\": \"req\",\r\n      \"type\": \"httpTrigger\",\r\n      \"direction\": \"in\",\r\n      \"methods\": [\r\n        \"get\",\r\n        \"post\"\r\n      ]\r\n    },\r\n    {\r\n      \"name\": \"$return\",\r\n      \"type\": \"http\",\r\n      \"direction\": \"out\"\r\n    }\r\n  ]\r\n}",
+        "function.proj": "<Project Sdk=\"Microsoft.NET.Sdk\">\r\n  <PropertyGroup>\r\n    <TargetFramework>netstandard2.0</TargetFramework>\r\n  </PropertyGroup>\r\n  <ItemGroup>\r\n    <PackageReference Include=\"Microsoft.NET.Sdk.Functions\" Version=\"1.0.14\" />\r\n    <PackageReference Include=\"WindowsAzure.Storage\" Version=\"8.6.0\" />\r\n    <PackageReference Include=\"Microsoft.Azure.KeyVault\" Version=\"3.0.0\" />\r\n    <PackageReference Include=\"Microsoft.Azure.Services.AppAuthentication\" Version=\"1.1.0-preview\" />\r\n    <PackageReference Include=\"Newtonsoft.Json\" Version=\"11.0.2\" />\r\n  </ItemGroup>\r\n</Project>",
+        "AzureTableUtil.cs": "using Microsoft.AspNetCore.Http;\r\nusing Microsoft.AspNetCore.Mvc;\r\nusing Microsoft.Azure.KeyVault;\r\nusing Microsoft.Azure.Services.AppAuthentication;\r\nusing Microsoft.Azure.WebJobs.Host;\r\nusing Microsoft.WindowsAzure.Storage;\r\nusing Microsoft.WindowsAzure.Storage.Table;\r\nusing Newtonsoft.Json;\r\nusing System;\r\nusing System.IO;\r\nusing System.Threading.Tasks;\r\n\r\npublic static class AzureTableUtil\r\n{\r\n    private static string tableConnectionString;\r\n\r\n    public static async Task<IActionResult> UpdateLastProcessedTimestampInTable(HttpRequest req, TraceWriter log)\r\n    {\r\n        if (tableConnectionString == null)\r\n        {\r\n            log.Info($\"Fetching LastProcessedDateTime table Connection String for the first time from KeyVault...\");\r\n            var azureServiceTokenProvider = new AzureServiceTokenProvider();\r\n            var keyVaultClient = new KeyVaultClient(new KeyVaultClient.AuthenticationCallback(azureServiceTokenProvider.KeyVaultTokenCallback));\r\n            var secretName = Environment.GetEnvironmentVariable(\"AzureTableStorageLastProcessedConnectionStringSecretName\", EnvironmentVariableTarget.Process);\r\n            var azureKeyVaultUrl = Environment.GetEnvironmentVariable(\"AzureKeyVaultUrl\", EnvironmentVariableTarget.Process);\r\n            var secret = await keyVaultClient.GetSecretAsync($\"{azureKeyVaultUrl}secrets/{secretName}\").ConfigureAwait(false);\r\n            tableConnectionString = secret.Value;\r\n            log.Info(\"[Setting]: Successfully fetched Table Connection String from KeyVault.\");\r\n        }\r\n        string tableName = Environment.GetEnvironmentVariable(\"LastProcessedDateTimeTableName\", EnvironmentVariableTarget.Process);\r\n        string tablePropertyName = Environment.GetEnvironmentVariable(\"LastProcessedTablePropertyName\", EnvironmentVariableTarget.Process);\r\n\r\n        //log.Info($\"[Setting]: Table Connection String: {tableConnectionString}\");\r\n        log.Info($\"[Setting]: Table Name: {tableName}\");\r\n        log.Info($\"[Setting]: Table Property Name: {tablePropertyName}\");\r\n\r\n        string newLastProcessedDateTimeUtcAsString = req.Query[\"newLastProcessedDateTimeUtc\"]; // GET\r\n        string requestBody = new StreamReader(req.Body).ReadToEnd(); // POST\r\n        dynamic data = JsonConvert.DeserializeObject(requestBody);\r\n        newLastProcessedDateTimeUtcAsString = newLastProcessedDateTimeUtcAsString ?? data?.newLastProcessedDateTimeUtc;\r\n        if (string.IsNullOrWhiteSpace(newLastProcessedDateTimeUtcAsString))\r\n        {\r\n            string errorMessage = \"A 'newLastProcessedDateTimeUtc' querystring parameter or a request body containing a JSON object with a 'newLastProcessedDateTimeUtc' property was expected but not found.\";\r\n            log.Info(errorMessage);\r\n            return new BadRequestObjectResult(errorMessage);\r\n        }\r\n        var newLastProcessedDateTimeUtc = DateTime.Parse(newLastProcessedDateTimeUtcAsString);\r\n        log.Info($\"New Last Processed DateTimeUtc: {newLastProcessedDateTimeUtcAsString}.\");\r\n\r\n        try\r\n        {\r\n            CloudStorageAccount storageAccount = CloudStorageAccount.Parse(tableConnectionString);\r\n            CloudTableClient tableClient = storageAccount.CreateCloudTableClient();\r\n            CloudTable cloudTable = tableClient.GetTableReference(tableName);\r\n            bool tableExists = await cloudTable.ExistsAsync();\r\n\r\n            if (!tableExists)\r\n            {\r\n                log.Info($\"Table {tableName} was not found in storage account. Creating table...\");\r\n                bool createdTableSuccessfully = await cloudTable.CreateIfNotExistsAsync();\r\n                if (!createdTableSuccessfully)\r\n                {\r\n                    log.Info($\"Failed to create table {tableName}. Create the table manually in storage account '{storageAccount.Credentials.AccountName}' with PartionKey/RowKey of 1/1 and a property '{tablePropertyName}' with an empty value.\");\r\n                    return new BadRequestObjectResult(\"Operation failed: Specified table not found. Check function's log for details.\");\r\n                }\r\n\r\n                // Add the first entity / default entity:\r\n                log.Info($\"Adding a default entity to newly created table '{tableName}'...\");\r\n                DynamicTableEntity entity = new DynamicTableEntity(\"1\", \"1\");\r\n                entity.Properties[tablePropertyName] = new EntityProperty(\"1/1/0001 12:00:00 AM\");\r\n                TableOperation insertOperation = TableOperation.Insert(entity);\r\n                await cloudTable.ExecuteAsync(insertOperation);\r\n                log.Info($\"Added default entity to newly created table '{tableName}'.\");\r\n            }\r\n            else\r\n            {\r\n                // Update the existing entity:\r\n                TableQuery<DynamicTableEntity> query = new TableQuery<DynamicTableEntity>().Take(1); // Get the first entity in the table. We don't care what the partition or row keys are.\r\n                TableQuerySegment<DynamicTableEntity> resultSegment = await cloudTable.ExecuteQuerySegmentedAsync(query, null);\r\n                DynamicTableEntity entity = resultSegment.Results[0];\r\n                log.Info($\"PartitionKey/RowKey values of the first entity in table '{tableName}' are: {entity.PartitionKey}/{entity.RowKey}.\");\r\n                EntityProperty lastProcessedTableEntityProperty = entity.Properties[tablePropertyName];\r\n                log.Info($\"Current value of '{tablePropertyName}' property in table '{tableName}' is: {lastProcessedTableEntityProperty.StringValue}.\");\r\n\r\n                // Set the property value to the new one:\r\n                lastProcessedTableEntityProperty.StringValue = newLastProcessedDateTimeUtcAsString;\r\n                entity.Properties[tablePropertyName] = lastProcessedTableEntityProperty;\r\n                TableOperation updateOperation = TableOperation.Replace(entity);\r\n                await cloudTable.ExecuteAsync(updateOperation);\r\n            }\r\n\r\n            dynamic payload = new System.Dynamic.ExpandoObject();\r\n            payload.Result = \"Operation succeeded.\";\r\n            return new OkObjectResult(JsonConvert.SerializeObject(payload, Formatting.Indented));\r\n        }\r\n        catch (Exception exception)\r\n        {\r\n            log.Info($\"Exception [UpdateLastProcessedTimestampInTable]: {exception.ToString()}.\");\r\n            return new BadRequestObjectResult(\"Operation failed. Check function's log for details.\");\r\n        }\r\n    }\r\n}\r\n"
+      }
+    },
+    "s3BucketRegion": "[parameters('s3BucketRegion').region]",
+    "storageAccountName": "[concat('adfstore', variables('uniqueSuffix'))]",
+    "hostingPlanName": "[concat('adffuncplan', variables('uniqueSuffix'))]",
+    "azureKeyVaultName": "[concat('adfkeyvault', variables('uniqueSuffix'))]",
+    "azureKeyVaultBaseUrl": "[concat('https://', variables('azureKeyVaultName'),'.vault.azure.net/')]",
+    "keyVaultSku": {
+      "value": "Standard",
+      "metadata": {
+        "description": "SKU for the Azure KeyVault. Possible values are: 'Standard' and 'Premium'."
+      }
+    },
+    "keyVaultEnabledForDeployment": false,
+    "keyVaultEnabledForTemplateDeployment": false,
+    "keyVaultEnabledForDiskEncryption": false,
+    "keyVaultNetworkAcls": {
+      "value": {
+        "defaultAction": "Allow",
+        "bypass": "AzureServices",
+        "virtualNetworkRules": [],
+        "ipRules": []
+      },
+      "metadata": {
+        "description": "The network firewall defined for this vault."
+      }
+    },
+    "targetAzureStorageConnectionStringSecretName": {
+      "value": "TargetBlobStorageAccountConnectionString",
+      "metadata": "Secret name in Azure KeyVault where the connection string of the Target Azure Storage Account is stored."
+    },
+    "azureTableStorageLastProcessedConnectionStringSecretName": {
+      "value": "LastProcessedDateTimeTableConnectionString",
+      "metadata": "Secret name in Azure KeyVault where the connection string of the Azure Storage Account containing the 'LastProcessed' table is stored."
+    },
+    "amazonS3SecretAccessKeySecretName": {
+      "value": "AmazonS3SecretAccessKey",
+      "metadata": "Secret name in Azure KeyVault where the S3 secret is stored."
+    }
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Storage/storageAccounts",
+      "name": "[variables('storageAccountName')]",
+      "apiVersion": "[variables('storageApiVersion')]",
+      "location": "[parameters('location')]",
+      "kind": "Storage",
+      "sku": {
+        "name": "Standard_LRS"
+      },
+      "tags": {
+        "displayName": "StorageAccountForADFv2",
+        "applicationName": "AmazonS3ToAzureBlobSync"
+      }
+    },
+    {
+      "type": "Microsoft.Web/serverfarms",
+      "name": "[variables('hostingPlanName')]",
+      "apiVersion": "[variables('hostingPlanApiVersion')]",
+      "location": "[parameters('location')]",
+      "tags": {
+        "displayName": "AppServicePlanForADFv2",
+        "applicationName": "AmazonS3ToAzureBlobSync"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName'))]"
+      ],
+      "properties": {
+        "name": "[variables('hostingPlanName')]",
+        "computeMode": "Shared",
+        "kind": "functionapp"
+      },
+      "sku": {
+        "name": "Y1",
+        "tier": "Dynamic",
+        "size": "Y1",
+        "family": "Y",
+        "capacity": 0
+      }
+    },
+    {
+      "type": "Microsoft.Web/sites",
+      "name": "[variables('functionAppName')]",
+      "apiVersion": "[variables('appServiceApiVersion')]",
+      "location": "[parameters('location')]",
+      "kind": "functionapp",
+      "tags": {
+        "displayName": "FunctionAppForADFv2Pipelines",
+        "applicationName": "AmazonS3ToAzureBlobSync"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Web/serverfarms', variables('hostingPlanName'))]",
+        "[resourceId('microsoft.insights/components', variables('appInsightsName'))]"
+      ],
+      "identity": {
+        "type": "SystemAssigned"
+      },
+      "properties": {
+        "name": "[variables('functionAppName')]",
+        "serverFarmId": "[resourceId('Microsoft.Web/serverfarms', variables('hostingPlanName'))]",
+        "siteConfig": {
+          "appSettings": [
+            {
+              "name": "AzureWebJobsDashboard",
+              "value": "[concat('DefaultEndpointsProtocol=https;AccountName=',variables('storageAccountName'),';AccountKey=',listKeys(resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName')), variables('storageApiVersion')).keys[0].value)]"
+            },
+            {
+              "name": "AzureWebJobsStorage",
+              "value": "[concat('DefaultEndpointsProtocol=https;AccountName=',variables('storageAccountName'),';AccountKey=',listKeys(resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName')), variables('storageApiVersion')).keys[0].value)]"
+            },
+            {
+              "name": "FUNCTIONS_EXTENSION_VERSION",
+              "value": "beta"
+            },
+            {
+              "name": "WEBSITE_CONTENTAZUREFILECONNECTIONSTRING",
+              "value": "[concat('DefaultEndpointsProtocol=https;AccountName=',variables('storageAccountName'),';AccountKey=',listKeys(resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName')), variables('storageApiVersion')).keys[0].value)]"
+            },
+            {
+              "name": "WEBSITE_CONTENTSHARE",
+              "value": "[concat(toLower(variables('functionAppName')), '6d6f6a616c6c')]"
+            },
+            {
+              "name": "WEBSITE_NODE_DEFAULT_VERSION",
+              "value": "6.5.0"
+            },
+            {
+              "name": "WEBSITE_USE_PLACEHOLDER",
+              "value": "0"
+            },
+            {
+              "name": "LastProcessedDateTimeTableName",
+              "value": "LastProcessed"
+            },
+            {
+              "name": "LastProcessedTablePropertyName",
+              "value": "LastProcessedDateTimeUtc"
+            },
+            {
+              "name": "AzureTableStorageLastProcessedConnectionStringSecretName",
+              "value": "[variables('azureTableStorageLastProcessedConnectionStringSecretName').value]"
+            },
+            {
+              "name": "AwsAccessKey",
+              "value": "[parameters('sourceAmazonS3AccessKeyId')]"
+            },
+            {
+              "name": "AmazonS3SecretAccessKeySecretName",
+              "value": "[variables('amazonS3SecretAccessKeySecretName').value]"
+            },
+            {
+              "name": "S3BucketName",
+              "value": "[parameters('s3BucketName')]"
+            },
+            {
+              "name": "S3BucketRegion",
+              "value": "[variables('s3BucketRegion')]"
+            },
+            {
+              "name": "AzureKeyVaultUrl",
+              "value": "[variables('azureKeyVaultBaseUrl')]"
+            },
+            {
+              "name": "AppInsights_InstrumentationKey",
+              "value": "[reference(concat('microsoft.insights/components/', variables('appInsightsName'))).InstrumentationKey]"
+            }
+          ]
+        },
+        "clientAffinityEnabled": false
+      }
+    },
+    {
+      "type": "Microsoft.Web/sites/functions",
+      "name": "[concat(variables('functionAppName'), '/', variables('listS3ObjectsFunction').functionName)]",
+      "apiVersion": "[variables('appServiceApiVersion')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Web/Sites', variables('functionAppName'))]"
+      ],
+      "properties": {
+        "config": {
+          "disabled": false
+        },
+        "files": "[variables('listS3ObjectsFunction').functionFiles]"
+      }
+    },
+    {
+      "type": "Microsoft.Web/sites/functions",
+      "name": "[concat(variables('functionAppName'), '/', variables('updateLastProcessedFunction').functionName)]",
+      "apiVersion": "[variables('appServiceApiVersion')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Web/Sites', variables('functionAppName'))]"
+      ],
+      "properties": {
+        "config": {
+          "disabled": false
+        },
+        "files": "[variables('updateLastProcessedFunction').functionFiles]"
+      }
+    },
+    {
+      "type": "microsoft.insights/components",
+      "name": "[variables('appInsightsName')]",
+      "apiVersion": "[variables('appInsightsApiVersion')]",
+      "location": "[parameters('location')]",
+      "tags": {
+        "displayName": "AppInsightsForADFv2FunctionApp",
+        "applicationName": "AmazonS3ToAzureBlobSync"
+      },
+      "properties": {
+        "ApplicationId": "[variables('appInsightsName')]",
+        "Application_Type": "web",
+        "Flow_Type": "Redfield",
+        "Request_Source": "AppServiceEnablementCreate"
+      }
+    },
+    {
+      "type": "Microsoft.DataFactory/factories",
+      "name": "[parameters('factoryName')]",
+      "apiVersion": "[variables('dataFactoryApiVersion')]",
+      "location": "[parameters('location')]",
+      "tags": {
+        "displayName": "AzureDataFactoryV2",
+        "applicationName": "AmazonS3ToAzureBlobSync"
+      },
+      "identity": {
+        "type": "SystemAssigned"
+      }
+    },
+    {
+      "type": "Microsoft.KeyVault/vaults",
+      "name": "[variables('azureKeyVaultName')]",
+      "apiVersion": "[variables('keyVaultApiVersion')]",
+      "location": "[parameters('location')]",
+      "tags": {
+        "displayName": "AzureKeyVaultForADFv2",
+        "applicationName": "AmazonS3ToAzureBlobSync"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName'))]"
+      ],
+      "properties": {
+        "enabledForDeployment": "[variables('keyVaultEnabledForDeployment')]",
+        "enabledForTemplateDeployment": "[variables('keyVaultEnabledForTemplateDeployment')]",
+        "enabledForDiskEncryption": "[variables('keyVaultEnabledForDiskEncryption')]",
+        "accessPolicies": [
+          {
+            "tenantId": "[subscription().tenantId]",
+            "objectId": "[reference(concat(resourceId('Microsoft.Web/sites', variables('functionAppName')),'/providers/Microsoft.ManagedIdentity/Identities/default'), variables('msiApiVersion')).principalId]",
+            "permissions": {
+              "keys": [],
+              "secrets": [
+                "Get"
+              ],
+              "certificates": []
+            }
+          },
+          {
+            "tenantId": "[subscription().tenantId]",
+            "objectId": "[reference(concat(resourceId('Microsoft.DataFactory/factories', parameters('factoryName')),'/providers/Microsoft.ManagedIdentity/Identities/default'), variables('msiApiVersion')).principalId]",
+            "permissions": {
+              "keys": [],
+              "secrets": [
+                "Get"
+              ],
+              "certificates": []
+            }
+          }
+        ],
+        "tenantId": "[subscription().tenantId]",
+        "sku": {
+          "name": "[variables('keyVaultSku').value]",
+          "family": "A"
+        },
+        "networkAcls": "[variables('keyVaultNetworkAcls').value]"
+      },
+      "resources": [
+        {
+          "type": "secrets",
+          "name": "[variables('azureTableStorageLastProcessedConnectionStringSecretName').value]",
+          "apiVersion": "[variables('keyVaultApiVersion')]",
+          "properties": {
+            "value": "[concat('DefaultEndpointsProtocol=https;AccountName=',variables('storageAccountName'),';AccountKey=',listKeys(resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName')), variables('storageApiVersion')).keys[0].value)]"
+          },
+          "dependsOn": [
+            "[concat('Microsoft.KeyVault/vaults/', variables('azureKeyVaultName'))]",
+            "[resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName'))]"
+          ]
+        },
+        {
+          "type": "secrets",
+          "name": "[variables('targetAzureStorageConnectionStringSecretName').value]",
+          "apiVersion": "[variables('keyVaultApiVersion')]",
+          "properties": {
+            "value": "[if(startsWith(parameters('targetBlobStorageAccountNameOrConnectionString'), 'DefaultEndpointsProtocol=https;'), parameters('targetBlobStorageAccountNameOrConnectionString'), concat('DefaultEndpointsProtocol=https;AccountName=',parameters('targetBlobStorageAccountNameOrConnectionString'),';AccountKey=',listKeys(resourceId('Microsoft.Storage/storageAccounts', parameters('targetBlobStorageAccountNameOrConnectionString')), variables('storageApiVersion')).keys[0].value))]"
+          },
+          "dependsOn": [
+            "[concat('Microsoft.KeyVault/vaults/', variables('azureKeyVaultName'))]"
+          ]
+        },
+        {
+          "type": "secrets",
+          "name": "[variables('amazonS3SecretAccessKeySecretName').value]",
+          "apiVersion": "[variables('keyVaultApiVersion')]",
+          "properties": {
+            "value": "[parameters('sourceAmazonS3SecretAccessKey')]"
+          },
+          "dependsOn": [
+            "[concat('Microsoft.KeyVault/vaults/', variables('azureKeyVaultName'))]"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "[concat(parameters('factoryName'), '/MasterCopyFromAmazonS3ToAzureBlob')]",
+      "type": "Microsoft.DataFactory/factories/pipelines",
+      "apiVersion": "[variables('dataFactoryApiVersion')]",
+      "properties": {
+        "activities": [
+          {
+            "name": "InitializeLastProcessedDateTime",
+            "type": "WebActivity",
+            "policy": {
+              "timeout": "7.00:00:00",
+              "retry": 5,
+              "retryIntervalInSeconds": 30,
+              "secureOutput": false
+            },
+            "typeProperties": {
+              "url": "[listsecrets(resourceId('Microsoft.Web/sites/functions', variables('functionAppName'), variables('updateLastProcessedFunction').functionName), variables('appServiceApiVersion')).trigger_url]",
+              "method": "POST",
+              "body": {
+                "value": "@concat('{ \"newLastProcessedDateTimeUtc\" : \"1/1/0001 12:00:00 AM\"}')",
+                "type": "Expression"
+              }
+            }
+          },
+          {
+            "name": "LookupLastProcessedDateTime",
+            "type": "Lookup",
+            "dependsOn": [
+              {
+                "activity": "InitializeLastProcessedDateTime",
+                "dependencyConditions": [
+                  "Succeeded"
+                ]
+              }
+            ],
+            "policy": {
+              "timeout": "7.00:00:00",
+              "retry": 0,
+              "retryIntervalInSeconds": 30,
+              "secureOutput": false
+            },
+            "userProperties": [],
+            "typeProperties": {
+              "source": {
+                "type": "AzureTableSource"
+              },
+              "dataset": {
+                "referenceName": "AzureTableLastProcessed",
+                "type": "DatasetReference",
+                "parameters": {}
+              },
+              "firstRowOnly": true
+            }
+          },
+          {
+            "name": "IfFirstRun",
+            "type": "IfCondition",
+            "dependsOn": [
+              {
+                "activity": "LookupLastProcessedDateTime",
+                "dependencyConditions": [
+                  "Succeeded"
+                ]
+              }
+            ],
+            "userProperties": [],
+            "typeProperties": {
+              "expression": {
+                "value": "@or(equals(activity('LookupLastProcessedDateTime').output.firstRow.LastProcessedDateTimeUtc, ''), equals(activity('LookupLastProcessedDateTime').output.firstRow.LastProcessedDateTimeUtc, '1/1/0001 12:00:00 AM'))",
+                "type": "Expression"
+              },
+              "ifFalseActivities": [
+                {
+                  "name": "ExecuteIncrementalCopyPipeline",
+                  "type": "ExecutePipeline",
+                  "dependsOn": [],
+                  "userProperties": [],
+                  "typeProperties": {
+                    "pipeline": {
+                      "referenceName": "IncrementalCopyFromAmazonS3ToAzureBlob",
+                      "type": "PipelineReference"
+                    },
+                    "waitOnCompletion": true,
+                    "parameters": {
+                      "s3BucketLastProcessedDateTimeUtc": {
+                        "value": "@activity('LookupLastProcessedDateTime').output.firstRow.LastProcessedDateTimeUtc",
+                        "type": "Expression"
+                      }
+                    }
+                  }
+                }
+              ],
+              "ifTrueActivities": [
+                {
+                  "name": "CopyAllObjectsUnfiltered",
+                  "type": "Copy",
+                  "dependsOn": [],
+                  "policy": {
+                    "timeout": "7.00:00:00",
+                    "retry": 0,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false
+                  },
+                  "userProperties": [],
+                  "typeProperties": {
+                    "source": {
+                      "type": "FileSystemSource",
+                      "recursive": true
+                    },
+                    "sink": {
+                      "type": "BlobSink",
+                      "copyBehavior": "PreserveHierarchy"
+                    },
+                    "enableStaging": false,
+                    "dataIntegrationUnits": 0
+                  },
+                  "inputs": [
+                    {
+                      "referenceName": "AmazonS3DataSetWithNoFilters",
+                      "type": "DatasetReference",
+                      "parameters": {}
+                    }
+                  ],
+                  "outputs": [
+                    {
+                      "referenceName": "BlobStorageContainerForFullCopy",
+                      "type": "DatasetReference",
+                      "parameters": {}
+                    }
+                  ]
+                },
+                {
+                  "name": "UpdateLastProcessedDateTimeInTable",
+                  "type": "WebActivity",
+                  "dependsOn": [
+                    {
+                      "activity": "CopyAllObjectsUnfiltered",
+                      "dependencyConditions": [
+                        "Succeeded"
+                      ]
+                    }
+                  ],
+                  "policy": {
+                    "timeout": "7.00:00:00",
+                    "retry": 5,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false
+                  },
+                  "userProperties": [],
+                  "typeProperties": {
+                    "url": "[listsecrets(resourceId('Microsoft.Web/sites/functions', variables('functionAppName'), variables('updateLastProcessedFunction').functionName), variables('appServiceApiVersion')).trigger_url]",
+                    "method": "POST",
+                    "headers": {},
+                    "body": {
+                      "value": "@concat('{ \"newLastProcessedDateTimeUtc\" : \"', utcnow(), '\"}')",
+                      "type": "Expression"
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "dependsOn": [
+        "[variables('factoryId')]",
+        "[concat(variables('factoryId'), '/datasets/AzureTableLastProcessed')]",
+        "[concat(variables('factoryId'), '/pipelines/IncrementalCopyFromAmazonS3ToAzureBlob')]",
+        "[concat(variables('factoryId'), '/datasets/AmazonS3DataSetWithNoFilters')]",
+        "[concat(variables('factoryId'), '/datasets/BlobStorageContainerForFullCopy')]",
+        "[resourceId('Microsoft.Web/Sites/functions', variables('functionAppName'), variables('updateLastProcessedFunction').functionName)]"
+      ]
+    },
+    {
+      "name": "[concat(parameters('factoryName'), '/IncrementalCopyFromAmazonS3ToAzureBlob')]",
+      "type": "Microsoft.DataFactory/factories/pipelines",
+      "apiVersion": "[variables('dataFactoryApiVersion')]",
+      "properties": {
+        "activities": [
+          {
+            "name": "LookupFilteredList",
+            "type": "Lookup",
+            "dependsOn": [],
+            "policy": {
+              "timeout": "7.00:00:00",
+              "retry": 0,
+              "retryIntervalInSeconds": 30,
+              "secureOutput": false
+            },
+            "userProperties": [],
+            "typeProperties": {
+              "source": {
+                "type": "HttpSource",
+                "httpRequestTimeout": "00:01:40"
+              },
+              "dataset": {
+                "referenceName": "ListS3ObjectsFilteredList",
+                "type": "DatasetReference",
+                "parameters": {
+                  "s3BucketLastProcessedDateTimeUtc": {
+                    "value": "@pipeline().parameters.s3BucketLastProcessedDateTimeUtc",
+                    "type": "Expression"
+                  }
+                }
+              },
+              "firstRowOnly": false
+            }
+          },
+          {
+            "name": "ForEachFilteredItem",
+            "type": "ForEach",
+            "dependsOn": [
+              {
+                "activity": "LookupFilteredList",
+                "dependencyConditions": [
+                  "Succeeded"
+                ]
+              }
+            ],
+            "userProperties": [],
+            "typeProperties": {
+              "items": {
+                "value": "@activity('LookupFilteredList').output.value[0].s3Objects",
+                "type": "Expression"
+              },
+              "isSequential": true,
+              "activities": [
+                {
+                  "name": "CopyFromS3ToBlobStorage",
+                  "type": "Copy",
+                  "dependsOn": [],
+                  "policy": {
+                    "timeout": "7.00:00:00",
+                    "retry": 0,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false
+                  },
+                  "userProperties": [],
+                  "typeProperties": {
+                    "source": {
+                      "type": "FileSystemSource",
+                      "recursive": true
+                    },
+                    "sink": {
+                      "type": "BlobSink",
+                      "copyBehavior": "PreserveHierarchy"
+                    },
+                    "enableStaging": false,
+                    "dataIntegrationUnits": 0
+                  },
+                  "inputs": [
+                    {
+                      "referenceName": "AmazonS3DataSetWithFilteredKeys",
+                      "type": "DatasetReference",
+                      "parameters": {
+                        "keyName": "@item().Key"
+                      }
+                    }
+                  ],
+                  "outputs": [
+                    {
+                      "referenceName": "BlobStorageContainerForIncrements",
+                      "type": "DatasetReference",
+                      "parameters": {
+                        "keyName": "@item().Key"
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "name": "UpdateLastProcessedDateTimeInTable",
+            "type": "WebActivity",
+            "dependsOn": [
+              {
+                "activity": "ForEachFilteredItem",
+                "dependencyConditions": [
+                  "Succeeded"
+                ]
+              }
+            ],
+            "policy": {
+              "timeout": "7.00:00:00",
+              "retry": 5,
+              "retryIntervalInSeconds": 30,
+              "secureOutput": false
+            },
+            "userProperties": [],
+            "typeProperties": {
+              "url": "[listsecrets(resourceId('Microsoft.Web/sites/functions', variables('functionAppName'), variables('updateLastProcessedFunction').functionName), variables('appServiceApiVersion')).trigger_url]",
+              "method": "POST",
+              "headers": {},
+              "body": {
+                "value": "@concat('{ \"newLastProcessedDateTimeUtc\" : \"', activity('LookupFilteredList').output.value[0].newLastProcessedDateTimeUtc, '\"}')",
+                "type": "Expression"
+              }
+            }
+          }
+        ],
+        "parameters": {
+          "s3BucketLastProcessedDateTimeUtc": {
+            "type": "String"
+          }
+        }
+      },
+      "dependsOn": [
+        "[variables('factoryId')]",
+        "[concat(variables('factoryId'), '/datasets/ListS3ObjectsFilteredList')]",
+        "[concat(variables('factoryId'), '/datasets/AmazonS3DataSetWithFilteredKeys')]",
+        "[concat(variables('factoryId'), '/datasets/BlobStorageContainerForIncrements')]",
+        "[resourceId('Microsoft.Web/Sites/functions', variables('functionAppName'), variables('updateLastProcessedFunction').functionName)]"
+      ]
+    },
+    {
+      "name": "[concat(parameters('factoryName'), '/ListS3ObjectsFilteredList')]",
+      "type": "Microsoft.DataFactory/factories/datasets",
+      "apiVersion": "[variables('dataFactoryApiVersion')]",
+      "properties": {
+        "linkedServiceName": {
+          "referenceName": "ListS3ObjectsFunctionApp",
+          "type": "LinkedServiceReference"
+        },
+        "parameters": {
+          "s3BucketLastProcessedDateTimeUtc": {
+            "type": "String"
+          }
+        },
+        "type": "HttpFile",
+        "structure": [
+          {
+            "name": "ETag",
+            "type": "String"
+          },
+          {
+            "name": "BucketName",
+            "type": "String"
+          },
+          {
+            "name": "Key",
+            "type": "String"
+          },
+          {
+            "name": "LastModified",
+            "type": "String"
+          },
+          {
+            "name": "Size",
+            "type": "Int64"
+          },
+          {
+            "name": "Value",
+            "type": "String"
+          }
+        ],
+        "typeProperties": {
+          "format": {
+            "type": "JsonFormat",
+            "filePattern": "setOfObjects",
+            "jsonNodeReference": "$.['s3Objects']",
+            "jsonPathDefinition": {
+              "s3Objects": "$.['s3Objects']",
+              "ETag": "[concat('[', '''ETag'']')]",
+              "BucketName": "[concat('[', '''BucketName'']')]",
+              "Key": "[concat('[', '''Key'']')]",
+              "LastModified": "[concat('[', '''LastModified'']')]",
+              "Size": "[concat('[', '''Size'']')]",
+              "Value": "[concat('[', '''StorageClass''][''Value'']')]"
+            }
+          },
+          "requestMethod": "Post",
+          "requestBody": {
+            "value": "@concat('{ \"s3BucketLastProcessedDateTimeUtc\" : \"', dataset().s3BucketLastProcessedDateTimeUtc, '\"}')",
+            "type": "Expression"
+          }
+        }
+      },
+      "dependsOn": [
+        "[variables('factoryId')]",
+        "[concat(variables('factoryId'), '/linkedServices/ListS3ObjectsFunctionApp')]"
+      ]
+    },
+    {
+      "name": "[concat(parameters('factoryName'), '/BlobStorageContainerForIncrements')]",
+      "type": "Microsoft.DataFactory/factories/datasets",
+      "apiVersion": "[variables('dataFactoryApiVersion')]",
+      "properties": {
+        "linkedServiceName": {
+          "referenceName": "AzureStorage",
+          "type": "LinkedServiceReference"
+        },
+        "parameters": {
+          "keyName": {
+            "type": "String"
+          }
+        },
+        "type": "AzureBlob",
+        "typeProperties": {
+          "fileName": {
+            "value": "[variables('targetBlobStorageContainerExpression')]",
+            "type": "Expression"
+          },
+          "folderPath": "[parameters('targetBlobStorageContainer')]"
+        }
+      },
+      "dependsOn": [
+        "[variables('factoryId')]",
+        "[concat(variables('factoryId'), '/linkedServices/AzureStorage')]"
+      ]
+    },
+    {
+      "name": "[concat(parameters('factoryName'), '/AmazonS3DataSetWithFilteredKeys')]",
+      "type": "Microsoft.DataFactory/factories/datasets",
+      "apiVersion": "[variables('dataFactoryApiVersion')]",
+      "properties": {
+        "linkedServiceName": {
+          "referenceName": "AmazonS3FullReadOnly",
+          "type": "LinkedServiceReference"
+        },
+        "parameters": {
+          "keyName": {
+            "type": "String"
+          }
+        },
+        "type": "AmazonS3Object",
+        "typeProperties": {
+          "key": {
+            "value": "@dataset().keyName",
+            "type": "Expression"
+          },
+          "prefix": "",
+          "bucketName": "zibucket"
+        }
+      },
+      "dependsOn": [
+        "[variables('factoryId')]",
+        "[concat(variables('factoryId'), '/linkedServices/AmazonS3FullReadOnly')]"
+      ]
+    },
+    {
+      "name": "[concat(parameters('factoryName'), '/AzureTableLastProcessed')]",
+      "type": "Microsoft.DataFactory/factories/datasets",
+      "apiVersion": "[variables('dataFactoryApiVersion')]",
+      "properties": {
+        "linkedServiceName": {
+          "referenceName": "AzureTableStorageLastProcessed",
+          "type": "LinkedServiceReference"
+        },
+        "type": "AzureTable",
+        "structure": [
+          {
+            "name": "PartitionKey",
+            "type": "String"
+          },
+          {
+            "name": "RowKey",
+            "type": "String"
+          },
+          {
+            "name": "Timestamp",
+            "type": "DateTimeOffset"
+          },
+          {
+            "name": "s3BucketLastProcessedDateTimeUtc",
+            "type": "String"
+          }
+        ],
+        "typeProperties": {
+          "tableName": "LastProcessed"
+        }
+      },
+      "dependsOn": [
+        "[variables('factoryId')]",
+        "[concat(variables('factoryId'), '/linkedServices/AzureTableStorageLastProcessed')]"
+      ]
+    },
+    {
+      "name": "[concat(parameters('factoryName'), '/BlobStorageContainerForFullCopy')]",
+      "type": "Microsoft.DataFactory/factories/datasets",
+      "apiVersion": "[variables('dataFactoryApiVersion')]",
+      "properties": {
+        "linkedServiceName": {
+          "referenceName": "AzureStorage",
+          "type": "LinkedServiceReference"
+        },
+        "type": "AzureBlob",
+        "typeProperties": {
+          "folderPath": "[parameters('targetBlobStorageContainer')]"
+        }
+      },
+      "dependsOn": [
+        "[variables('factoryId')]",
+        "[concat(variables('factoryId'), '/linkedServices/AzureStorage')]"
+      ]
+    },
+    {
+      "name": "[concat(parameters('factoryName'), '/AmazonS3DataSetWithNoFilters')]",
+      "type": "Microsoft.DataFactory/factories/datasets",
+      "apiVersion": "[variables('dataFactoryApiVersion')]",
+      "properties": {
+        "linkedServiceName": {
+          "referenceName": "AmazonS3FullReadOnly",
+          "type": "LinkedServiceReference"
+        },
+        "type": "AmazonS3Object",
+        "typeProperties": {
+          "bucketName": "zibucket"
+        }
+      },
+      "dependsOn": [
+        "[variables('factoryId')]",
+        "[concat(variables('factoryId'), '/linkedServices/AmazonS3FullReadOnly')]"
+      ]
+    },
+    {
+      "name": "[concat(parameters('factoryName'), '/SyncObjectsTrigger')]",
+      "type": "Microsoft.DataFactory/factories/triggers",
+      "apiVersion": "[variables('dataFactoryApiVersion')]",
+      "properties": {
+        "description": "Scheduled recurring trigger that invokes the pipeline for syncing objects between the source S3 bucker and the target Azure Blob Storage container.",
+        "runtimeState": "Stopped",
+        "pipelines": [
+          {
+            "pipelineReference": {
+              "referenceName": "MasterCopyFromAmazonS3ToAzureBlob",
+              "type": "PipelineReference"
+            },
+            "parameters": {}
+          }
+        ],
+        "type": "ScheduleTrigger",
+        "typeProperties": {
+          "recurrence": {
+            "frequency": "[variables('triggerScheduleFrequency')]",
+            "interval": "[variables('triggerScheduleInterval')]",
+            "startTime": "[variables('triggerScheduleStartTime')]",
+            "timeZone": "[variables('triggerScheduleTimeZone')]"
+          }
+        }
+      },
+      "dependsOn": [
+        "[variables('factoryId')]",
+        "[concat(variables('factoryId'), '/pipelines/MasterCopyFromAmazonS3ToAzureBlob')]"
+      ]
+    },
+    {
+      "name": "[concat(parameters('factoryName'), '/AzureStorage')]",
+      "type": "Microsoft.DataFactory/factories/linkedServices",
+      "apiVersion": "[variables('dataFactoryApiVersion')]",
+      "properties": {
+        "description": "Target Azure Storage account to which S3 objects are to be copied.",
+        "type": "AzureStorage",
+        "typeProperties": {
+          "connectionString": {
+            "type": "AzureKeyVaultSecret",
+            "store": {
+              "referenceName": "AzureKeyVault",
+              "type": "LinkedServiceReference"
+            },
+            "secretName": "[variables('targetAzureStorageConnectionStringSecretName').value]"
+          }
+        }
+      },
+      "dependsOn": [
+        "[variables('factoryId')]",
+        "[concat(variables('factoryId'), '/linkedServices/AzureKeyVault')]"
+      ]
+    },
+    {
+      "name": "[concat(parameters('factoryName'), '/AmazonS3FullReadOnly')]",
+      "type": "Microsoft.DataFactory/factories/linkedServices",
+      "apiVersion": "[variables('dataFactoryApiVersion')]",
+      "properties": {
+        "description": "Source S3 bucket from which to copy objects to Azure blob storage. Based exactly on the documentation in:\nhttps://docs.microsoft.com/en-us/azure/data-factory/connector-amazon-simple-storage-service\n\n{\n    \"Version\": \"2012-10-17\",\n    \"Statement\": [\n        {\n            \"Sid\": \"Stmt1001\",\n            \"Effect\": \"Allow\",\n            \"Action\": [\n                \"s3:GetObject\",\n                \"s3:GetObjectVersion\"\n            ],\n            \"Resource\": [\n                \"arn:aws:s3:::mybucket/*\"\n            ]\n        },\n        {\n            \"Sid\": \"Stmt1002\",\n            \"Effect\": \"Allow\",\n            \"Action\": [\n                \"s3:GetBucketLocation\",\n                \"s3:ListBucket\",\n                \"s3:ListAllMyBuckets\"\n            ],\n            \"Resource\": [\n                \"arn:aws:s3:::*\"\n            ]\n        }\n    ]\n}\n",
+        "type": "AmazonS3",
+        "typeProperties": {
+          "accessKeyId": "[parameters('sourceAmazonS3AccessKeyId')]",
+          "secretAccessKey": {
+            "type": "AzureKeyVaultSecret",
+            "store": {
+              "referenceName": "AzureKeyVault",
+              "type": "LinkedServiceReference"
+            },
+            "secretName": "[variables('amazonS3SecretAccessKeySecretName').value]"
+          }
+        }
+      },
+      "dependsOn": [
+        "[variables('factoryId')]",
+        "[concat(variables('factoryId'), '/linkedServices/AzureKeyVault')]"
+      ]
+    },
+    {
+      "name": "[concat(parameters('factoryName'), '/ListS3ObjectsFunctionApp')]",
+      "type": "Microsoft.DataFactory/factories/linkedServices",
+      "apiVersion": "[variables('dataFactoryApiVersion')]",
+      "properties": {
+        "description": "Filters S3 objects.",
+        "type": "HttpServer",
+        "typeProperties": {
+          "url": "[listsecrets(resourceId('Microsoft.Web/sites/functions', variables('functionAppName'), variables('listS3ObjectsFunction').functionName), variables('appServiceApiVersion')).trigger_url]",
+          "enableServerCertificateValidation": true,
+          "authenticationType": "Anonymous"
+        }
+      },
+      "dependsOn": [
+        "[variables('factoryId')]",
+        "[resourceId('Microsoft.Web/Sites/functions', variables('functionAppName'), variables('listS3ObjectsFunction').functionName)]"
+      ]
+    },
+    {
+      "name": "[concat(parameters('factoryName'), '/AzureTableStorageLastProcessed')]",
+      "type": "Microsoft.DataFactory/factories/linkedServices",
+      "apiVersion": "[variables('dataFactoryApiVersion')]",
+      "properties": {
+        "description": "Target Azure Storage account to which S3 objects are to be copied.",
+        "type": "AzureStorage",
+        "typeProperties": {
+          "connectionString": {
+            "type": "AzureKeyVaultSecret",
+            "store": {
+              "referenceName": "AzureKeyVault",
+              "type": "LinkedServiceReference"
+            },
+            "secretName": "[variables('azureTableStorageLastProcessedConnectionStringSecretName').value]"
+          }
+        }
+      },
+      "dependsOn": [
+        "[variables('factoryId')]",
+        "[concat(variables('factoryId'), '/linkedServices/AzureKeyVault')]"
+      ]
+    },
+    {
+      "name": "[concat(parameters('factoryName'), '/AzureKeyVault')]",
+      "type": "Microsoft.DataFactory/factories/linkedServices",
+      "apiVersion": "[variables('dataFactoryApiVersion')]",
+      "properties": {
+        "description": "Azure KeyVault containing the secrets for S3 secret and Azure Storage account connection strings.",
+        "type": "AzureKeyVault",
+        "typeProperties": {
+          "baseUrl": "[variables('azureKeyVaultBaseUrl')]"
+        }
+      },
+      "dependsOn": [
+        "[variables('factoryId')]"
+      ]
+    }
+  ]
 }

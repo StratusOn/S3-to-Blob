@@ -3,6 +3,8 @@ using Amazon.S3;
 using Amazon.S3.Model;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Azure.KeyVault;
+using Microsoft.Azure.Services.AppAuthentication;
 using Microsoft.Azure.WebJobs.Host;
 using Newtonsoft.Json;
 using System;
@@ -12,12 +14,27 @@ using System.Threading.Tasks;
 
 public static class S3Util
 {
+    private static string awsSecretKey;
+
     public static async Task<IActionResult> ListingObjectsAsync(HttpRequest req, TraceWriter log)
     {
         // Reference: https://docs.aws.amazon.com/AmazonS3/latest/dev/ListingObjectKeysUsingNetSDK.html
         var bucketName = Environment.GetEnvironmentVariable("S3BucketName", EnvironmentVariableTarget.Process);
         var bucketRegion = RegionEndpoint.GetBySystemName(Environment.GetEnvironmentVariable("S3BucketRegion", EnvironmentVariableTarget.Process));
-        var credentials = new Amazon.Runtime.BasicAWSCredentials(Environment.GetEnvironmentVariable("AwsAccessKey", EnvironmentVariableTarget.Process), Environment.GetEnvironmentVariable("AwsSecretKey", EnvironmentVariableTarget.Process));
+
+        if (awsSecretKey == null)
+        {
+            log.Info($"Fetching AWS secret key for the first time from KeyVault...");
+            var azureServiceTokenProvider = new AzureServiceTokenProvider();
+            var keyVaultClient = new KeyVaultClient(new KeyVaultClient.AuthenticationCallback(azureServiceTokenProvider.KeyVaultTokenCallback));
+            var secretName = Environment.GetEnvironmentVariable("AmazonS3SecretAccessKeySecretName", EnvironmentVariableTarget.Process);
+            var azureKeyVaultUrl = Environment.GetEnvironmentVariable("AzureKeyVaultUrl", EnvironmentVariableTarget.Process);
+            var secret = await keyVaultClient.GetSecretAsync($"{azureKeyVaultUrl}secrets/{secretName}").ConfigureAwait(false);
+            awsSecretKey = secret.Value;
+            log.Info("[Setting]: Successfully fetched AWS secret key from KeyVault.");
+        }
+
+        var credentials = new Amazon.Runtime.BasicAWSCredentials(Environment.GetEnvironmentVariable("AwsAccessKey", EnvironmentVariableTarget.Process), awsSecretKey);
 
         string s3BucketLastProcessedDateTimeUtcAsString = req.Query["s3BucketLastProcessedDateTimeUtc"]; // GET
         string requestBody = new StreamReader(req.Body).ReadToEnd(); // POST
