@@ -14,3 +14,43 @@ You can deploy this solution by clicking on the following button:
 
 ## Assumptions
 * This assumes that you have access to an S3 account (via a key and a secret) but cannot make midifications to the AWS account like creating an AWS Lambda function to spy on an S3 bucket and trigger the copying to the Azure Storage account.
+
+## S3 Bucket Permissions
+The ADF [documentation](https://docs.microsoft.com/en-us/azure/data-factory/connector-amazon-simple-storage-service) specifies the required permissions. The following policy definition can be used as an example:
+
+```json
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Sid": "Stmt00001",
+            "Effect": "Allow",
+            "Action": [
+                "s3:GetObject",
+                "s3:GetObjectVersion"
+            ],
+            "Resource": [
+                "arn:aws:s3:::mybucket/*"
+            ]
+        },
+        {
+            "Sid": "Stmt00002",
+            "Effect": "Allow",
+            "Action": [
+                "s3:GetBucketLocation",
+                "s3:ListBucket",
+                "s3:ListAllMyBuckets"
+            ],
+            "Resource": [
+                "arn:aws:s3:::*"
+            ]
+        }
+    ]
+}
+```
+
+## Reference
+
+ADF concepts: https://docs.microsoft.com/en-us/azure/data-factory/concepts-pipelines-activities
+
+Incremental data load: https://docs.microsoft.com/en-us/azure/data-factory/tutorial-incremental-copy-overview
