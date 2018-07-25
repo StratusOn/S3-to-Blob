@@ -1,4 +1,4 @@
-# S3 to Blob
+# S3 to Blob Data Sync
 
 A simple solution for monitoring an AWS S3 bucket and keep track of its contents. Upon detecting a new object being uploaded into the S3 bucket, it will be copied into an Azure Storage account (blob-only or general purpose, v1 or v2). This solution utilizes Azure Data Factory v2.
 
