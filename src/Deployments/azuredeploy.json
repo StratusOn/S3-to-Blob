@@ -146,14 +146,14 @@
     "triggerScheduleTimeZone": "UTC",
     "dataFactoryApiVersion": "2018-06-01",
     "keyVaultApiVersion": "2016-10-01",
-    "appInsightsApiVersion": "2014-08-01",
+    "appInsightsApiVersion": "2015-05-01",
     "storageApiVersion": "2016-12-01",
     "appServiceApiVersion": "2016-08-01",
     "hostingPlanApiVersion": "2016-09-01",
     "roleAssignmentsApiVersion": "2016-07-01",
     "msiApiVersion": "2015-08-31-PREVIEW",
     "functionAppName": "[concat('adffunc', variables('uniqueSuffix'))]",
-    "appInsightsName": "[variables('functionAppName')]",
+    "appInsightsName": "[concat('adfappins', variables('uniqueSuffix'))]",
     "listS3ObjectsFunction": {
       "functionName": "ListS3Objects",
       "functionFiles": {
@@ -208,7 +208,34 @@
     "amazonS3SecretAccessKeySecretName": {
       "value": "AmazonS3SecretAccessKey",
       "metadata": "Secret name in Azure KeyVault where the S3 secret is stored."
-    }
+    },
+    "appInsightsRegionMapping": {
+      "West US": {
+        "region": "West US 2"
+      },
+      "West US 2": {
+        "region": "West US 2"
+      },
+      "East US": {
+        "region": "East US"
+      },
+      "East US 2": {
+        "region": "East US"
+      },
+      "West Central US": {
+        "region": "South Central US"
+      },
+      "North Europe": {
+        "region": "North Europe"
+      },
+      "West Europe": {
+        "region": "West Europe"
+      },
+      "Southeast Asia": {
+        "region": "Southeast Asia"
+      }
+    },
+    "appInsightsLocation": "[variables('appInsightsRegionMapping')[parameters('location')].region]"
   },
   "resources": [
     {
@@ -373,16 +400,18 @@
       "type": "microsoft.insights/components",
       "name": "[variables('appInsightsName')]",
       "apiVersion": "[variables('appInsightsApiVersion')]",
-      "location": "[parameters('location')]",
+      "location": "[variables('appInsightsLocation')]",
       "tags": {
         "displayName": "AppInsightsForADFv2FunctionApp",
-        "applicationName": "AmazonS3ToAzureBlobSync"
+        "applicationName": "AmazonS3ToAzureBlobSync",
+        "[concat('hidden-link:', resourceGroup().id, '/providers/Microsoft.Web/sites/', variables('functionAppName'))]": "Resource"
       },
+      "kind": "web",
       "properties": {
         "ApplicationId": "[variables('appInsightsName')]",
         "Application_Type": "web",
-        "Flow_Type": "Redfield",
-        "Request_Source": "AppServiceEnablementCreate"
+        "Flow_Type": "Bluefield",
+        "Request_Source": "rest"
       }
     },
     {
