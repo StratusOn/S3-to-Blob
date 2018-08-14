@@ -12,11 +12,13 @@ using System.Threading.Tasks;
 
 public static class AzureTableUtil
 {
-    private static string tableConnectionString;
+    private const string DefaultDateTimeValue = "1/1/0001 12:00:00 AM";
+
+    private static string TableConnectionString;
 
     public static async Task<IActionResult> UpdateLastProcessedTimestampInTable(HttpRequest req, TraceWriter log)
     {
-        if (tableConnectionString == null)
+        if (TableConnectionString == null)
         {
             log.Info($"Fetching LastProcessedDateTime table Connection String for the first time from KeyVault...");
             var azureServiceTokenProvider = new AzureServiceTokenProvider();
@@ -24,13 +26,13 @@ public static class AzureTableUtil
             var secretName = Environment.GetEnvironmentVariable("AzureTableStorageLastProcessedConnectionStringSecretName", EnvironmentVariableTarget.Process);
             var azureKeyVaultUrl = Environment.GetEnvironmentVariable("AzureKeyVaultUrl", EnvironmentVariableTarget.Process);
             var secret = await keyVaultClient.GetSecretAsync($"{azureKeyVaultUrl}secrets/{secretName}").ConfigureAwait(false);
-            tableConnectionString = secret.Value;
+            TableConnectionString = secret.Value;
             log.Info("[Setting]: Successfully fetched Table Connection String from KeyVault.");
         }
         string tableName = Environment.GetEnvironmentVariable("LastProcessedDateTimeTableName", EnvironmentVariableTarget.Process);
         string tablePropertyName = Environment.GetEnvironmentVariable("LastProcessedTablePropertyName", EnvironmentVariableTarget.Process);
 
-        //log.Info($"[Setting]: Table Connection String: {tableConnectionString}");
+        //log.Info($"[Setting]: Table Connection String: {TableConnectionString}");
         log.Info($"[Setting]: Table Name: {tableName}");
         log.Info($"[Setting]: Table Property Name: {tablePropertyName}");
 
@@ -49,7 +51,7 @@ public static class AzureTableUtil
 
         try
         {
-            CloudStorageAccount storageAccount = CloudStorageAccount.Parse(tableConnectionString);
+            CloudStorageAccount storageAccount = CloudStorageAccount.Parse(TableConnectionString);
             CloudTableClient tableClient = storageAccount.CreateCloudTableClient();
             CloudTable cloudTable = tableClient.GetTableReference(tableName);
             bool tableExists = await cloudTable.ExistsAsync();
@@ -67,26 +69,32 @@ public static class AzureTableUtil
                 // Add the first entity / default entity:
                 log.Info($"Adding a default entity to newly created table '{tableName}'...");
                 DynamicTableEntity entity = new DynamicTableEntity("1", "1");
-                entity.Properties[tablePropertyName] = new EntityProperty("1/1/0001 12:00:00 AM");
+                entity.Properties[tablePropertyName] = new EntityProperty(DefaultDateTimeValue);
                 TableOperation insertOperation = TableOperation.Insert(entity);
                 await cloudTable.ExecuteAsync(insertOperation);
                 log.Info($"Added default entity to newly created table '{tableName}'.");
             }
             else
             {
-                // Update the existing entity:
-                TableQuery<DynamicTableEntity> query = new TableQuery<DynamicTableEntity>().Take(1); // Get the first entity in the table. We don't care what the partition or row keys are.
-                TableQuerySegment<DynamicTableEntity> resultSegment = await cloudTable.ExecuteQuerySegmentedAsync(query, null);
-                DynamicTableEntity entity = resultSegment.Results[0];
-                log.Info($"PartitionKey/RowKey values of the first entity in table '{tableName}' are: {entity.PartitionKey}/{entity.RowKey}.");
-                EntityProperty lastProcessedTableEntityProperty = entity.Properties[tablePropertyName];
-                log.Info($"Current value of '{tablePropertyName}' property in table '{tableName}' is: {lastProcessedTableEntityProperty.StringValue}.");
+                // Update the existing entity if this is not the default date/time value (used to initialize the ADFv2 pipeline):
+                if (string.CompareOrdinal(DefaultDateTimeValue, newLastProcessedDateTimeUtcAsString) != 0)
+                {
+                    TableQuery<DynamicTableEntity>
+                        query = new TableQuery<DynamicTableEntity>()
+                            .Take(1); // Get the first entity in the table. We don't care what the partition or row keys are.
+                    TableQuerySegment<DynamicTableEntity> resultSegment =
+                        await cloudTable.ExecuteQuerySegmentedAsync(query, null);
+                    DynamicTableEntity entity = resultSegment.Results[0];
+                    log.Info($"PartitionKey/RowKey values of the first entity in table '{tableName}' are: {entity.PartitionKey}/{entity.RowKey}.");
+                    EntityProperty lastProcessedTableEntityProperty = entity.Properties[tablePropertyName];
+                    log.Info($"Current value of '{tablePropertyName}' property in table '{tableName}' is: {lastProcessedTableEntityProperty.StringValue}.");
 
-                // Set the property value to the new one:
-                lastProcessedTableEntityProperty.StringValue = newLastProcessedDateTimeUtcAsString;
-                entity.Properties[tablePropertyName] = lastProcessedTableEntityProperty;
-                TableOperation updateOperation = TableOperation.Replace(entity);
-                await cloudTable.ExecuteAsync(updateOperation);
+                    // Set the property value to the new one:
+                    lastProcessedTableEntityProperty.StringValue = newLastProcessedDateTimeUtcAsString;
+                    entity.Properties[tablePropertyName] = lastProcessedTableEntityProperty;
+                    TableOperation updateOperation = TableOperation.Replace(entity);
+                    await cloudTable.ExecuteAsync(updateOperation);
+                }
             }
 
             dynamic payload = new System.Dynamic.ExpandoObject();
