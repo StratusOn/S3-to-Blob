@@ -665,7 +665,7 @@
                     "method": "POST",
                     "headers": {},
                     "body": {
-                      "value": "@json('{ \"newLastProcessedDateTimeUtc\" : \"@{utcnow()}\"}')",
+                      "value": "@json(concat('{ \"newLastProcessedDateTimeUtc\" : \"', utcnow(), '\"}'))",
                       "type": "Expression"
                     }
                   }
