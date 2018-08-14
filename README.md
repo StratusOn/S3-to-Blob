@@ -1,4 +1,4 @@
-# S3 to Blob Data Sync
+# S3 to Blob Data Sync Using ADF v2
 
 A simple solution for monitoring an AWS S3 bucket and keep track of its contents. Upon detecting a new object being uploaded into the S3 bucket, it will be copied into an Azure Storage account (blob-only or general purpose, v1 or v2). This solution utilizes Azure Data Factory v2.
 
@@ -6,6 +6,10 @@ A simple solution for monitoring an AWS S3 bucket and keep track of its contents
 You can deploy this solution by clicking on the following button:
 
 [![Deploy to Azure](http://azuredeploy.net/deploybutton.png)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2FStratusOn%2FS3-to-Blob%2Fmaster%2Fsrc%2FDeployments%2Fazuredeploy.json)
+
+## Quick Demo & Walk-through (length: 00:06:32)
+
+[![ADFv2 S3-to-Blob Data Sync](http://img.youtube.com/vi/Z_zhiB0sTc8/0.jpg)](https://youtu.be/Z_zhiB0sTc8 "ADFv2 S3-to-Blob Data Sync")
 
 * Once the deployment finishes (it takes about 2 minutes), go to the resource group, click on the Azure Data Factory resource that was created and then click on "Author & Monitor".
 * Click on the "Author" button on the left navigation menu. This loads the editor.
