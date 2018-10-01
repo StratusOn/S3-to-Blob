@@ -147,7 +147,7 @@
     "dataFactoryApiVersion": "2018-06-01",
     "keyVaultApiVersion": "2016-10-01",
     "appInsightsApiVersion": "2015-05-01",
-    "storageApiVersion": "2016-12-01",
+    "storageApiVersion": "2018-02-01",
     "appServiceApiVersion": "2016-08-01",
     "hostingPlanApiVersion": "2016-09-01",
     "roleAssignmentsApiVersion": "2016-07-01",
@@ -243,13 +243,28 @@
       "name": "[variables('storageAccountName')]",
       "apiVersion": "[variables('storageApiVersion')]",
       "location": "[parameters('location')]",
-      "kind": "Storage",
+      "kind": "StorageV2",
       "sku": {
         "name": "Standard_LRS"
       },
       "tags": {
         "displayName": "StorageAccountForADFv2",
         "applicationName": "AmazonS3ToAzureBlobSync"
+      },
+      "properties": {
+        "accessTier": "Hot",
+        "supportsHttpsTrafficOnly": true,
+        "encryption": {
+          "services": {
+            "blob": {
+              "enabled": true
+            },
+            "file": {
+              "enabled": true
+            }
+          },
+          "keySource": "Microsoft.Storage"
+        }
       }
     },
     {
@@ -297,6 +312,7 @@
       "properties": {
         "name": "[variables('functionAppName')]",
         "serverFarmId": "[resourceId('Microsoft.Web/serverfarms', variables('hostingPlanName'))]",
+        "httpsOnly": true,
         "siteConfig": {
           "appSettings": [
             {
@@ -308,8 +324,16 @@
               "value": "[concat('DefaultEndpointsProtocol=https;AccountName=',variables('storageAccountName'),';AccountKey=',listKeys(resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName')), variables('storageApiVersion')).keys[0].value)]"
             },
             {
+              "name": "AzureWebJobsSecretStorageType",
+              "value": "Files"
+            },
+            {
               "name": "FUNCTIONS_EXTENSION_VERSION",
-              "value": "beta"
+              "value": "~2"
+            },
+            {
+              "name": "WEBSITE_RUN_FROM_ZIP",
+              "value": "0"
             },
             {
               "name": "WEBSITE_CONTENTAZUREFILECONNECTIONSTRING",
