@@ -967,7 +967,7 @@
             "type": "Expression"
           },
           "prefix": "",
-          "bucketName": "zibucket"
+          "bucketName": "[parameters('s3BucketName')]"
         }
       },
       "dependsOn": [
@@ -1042,7 +1042,7 @@
         },
         "type": "AmazonS3Object",
         "typeProperties": {
-          "bucketName": "zibucket"
+          "bucketName": "[parameters('s3BucketName')]"
         }
       },
       "dependsOn": [
